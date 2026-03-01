@@ -57,6 +57,12 @@ graph TD
 
 ## Usage
 
+### Monitor GPU Utilization
+**In `sinteractive`:**
+- find your gpu node (eg. gpu-4-21)
+- open a second terminal and run `ssh gpu-4-21`
+- run `watch -n 1 nvidia-smi`
+
 ### 1. Full Training Pipeline
 To run the entire pipeline (Generation -> Filtering -> Training), submit the training job:
 

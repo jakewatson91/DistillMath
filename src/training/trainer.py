@@ -1,92 +1,90 @@
-from datasets import Dataset
-from trl import SFTTrainer, SFTConfig
-from unsloth import is_bfloat16_supported
-import torch
 import os
+from datasets import load_dataset
+import torch
+from transformers import Trainer, TrainingArguments, DefaultDataCollator
+import torch.nn.functional as F
 from typing import Union, List, Optional, Callable, Any
+
+class TeacherDistiller:
+    def __init__(self, teacher_model, tokenizer, max_length=512):
+        self.teacher_model = teacher_model
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+
+    def __call__(self, features):
+        texts = [f["text"] for f in features]
+
+        inputs = self.tokenizer(texts, padding=True, truncation=True, return_tensors="pt", max_length=self.max_length)
+
+        teacher_inputs = {k: v.to(self.teacher_model.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = self.teacher_model(**teacher_inputs)
+            teacher_logits = outputs.logits
+        
+        labels = inputs["input_ids"].clone()
+        labels[labels == self.tokenizer.pad_token_id] = -100
+
+        return {
+            "input_ids": inputs["input_ids"],
+            "attention_mask": inputs["attention_mask"],
+            "labels": labels,
+            "teacher_logits": teacher_logits.cpu()
+        }
+    
+class InstilTrainer(Trainer):
+    def __init__(self, *args, loss_alpha=0.5, temperature=2.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.loss_alpha = loss_alpha
+        self.temperature = temperature
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        teacher_logits = inputs.pop("teacher_logits")
+
+        outputs = model(**inputs)
+        student_logits = outputs.logits
+
+        teacher_logits = teacher_logits.to(student_logits.device)
+
+        T = self.temperature
+        distill_loss = F.kl_div(
+            F.log_softmax(student_logits / T, dim=-1),
+            F.softmax(teacher_logits / T, dim=-1),
+            reduction="batchmean",
+        ) * (T ** 2)
+
+        sft_loss = outputs.loss
+        loss = (self.loss_alpha * distill_loss) + ((1 - self.loss_alpha) * sft_loss)
+        
+        return (loss, outputs) if return_outputs else loss
 
 def train(
     *,
-    model,
+    student_model,
+    teacher_model,
     tokenizer,
-    train_dataset: Union[Dataset, List[str]],
-    eval_dataset: Union[Dataset, List[str]],
+    train_dataset,
     output_dir: str,
-    logging_dir: str,
-    formatting_func: Optional[Callable] = None,
-    max_length: int = 2048,
-    epochs: int = 3,
-    batch_size: int = 2,  # Bumped to 2 (Unsloth handles this well)
-    grad_accum: int = 4,
-    learning_rate: float = 2e-4,
-    logging_steps: int = 10,  
-    weight_decay: float = 0.01,
-    warmup_ratio: float = 0.1,
-    fp16: bool = False,
-    bf16: bool = True,
-    max_steps: int = -1,      
-    grad_checkp: bool = True,
-    seed: int = 3407,      # Added seed argument
-    report_to: str = "none", # Added report_to argument
-    optim: str = "adamw_8bit",
-    dataset_num_proc: int = os.cpu_count(),
-    dataloader_num_workers: int = 2,
-    callbacks: Optional[List[Any]] = None,
+    loss_alpha: float = 0.5,
+    temperature: float = 2.0,
+    eval_dataset = None,
+    **kwargs 
 ):
-    # 1. Convert lists to Datasets
-    if isinstance(train_dataset, list):
-        train_dataset = Dataset.from_dict({"text": train_dataset})
-    if isinstance(eval_dataset, list):
-        eval_dataset = Dataset.from_dict({"text": eval_dataset})
+    tokenizer.pad_token = tokenizer.eos_token
 
-    # 2. Configure Training (All args moved here for modern TRL support)
-    sft_config = SFTConfig(
-        output_dir = output_dir,
-        dataset_text_field = "text" if formatting_func is None else None,
-        max_seq_length = max_length,
-        dataset_num_proc = dataset_num_proc,
-        packing = False, # Set to True if you want faster training on long contexts
-        
-        # Training Stats
-        num_train_epochs = epochs,
-        max_steps = max_steps,
-        per_device_train_batch_size = batch_size,
-        gradient_accumulation_steps = grad_accum,
-        learning_rate = learning_rate,
-        optim = optim,
-        weight_decay = weight_decay,
-        warmup_ratio = warmup_ratio,
-        lr_scheduler_type = "linear",
-        
-        # Hardware
-        fp16 = fp16,
-        bf16 = bf16,
-        gradient_checkpointing = grad_checkp,
-        seed = seed,
-        
-        # Logging
-        logging_dir = str(logging_dir),
-        logging_steps = logging_steps,
-        report_to = report_to,
-        dataloader_num_workers = dataloader_num_workers,
-        
-        # Evaluation & Saving
-        evaluation_strategy = "steps",
-        eval_steps = logging_steps,
-        save_strategy = "steps",
-        save_steps = logging_steps * 2,
-        load_best_model_at_end = True,
+    training_args = TrainingArguments(
+        output_dir=output_dir,
+        **kwargs
     )
 
-    # 3. Initialize Trainer
-    trainer = SFTTrainer(
-        model = model,
-        tokenizer = tokenizer,
-        train_dataset = train_dataset,
-        eval_dataset = eval_dataset,
-        formatting_func = formatting_func,
-        args = sft_config,
-        callbacks = callbacks,
+    trainer = InstilTrainer(
+        model=student_model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        loss_alpha=loss_alpha,    
+        temperature=temperature,
+        data_collator=TeacherDistiller(teacher_model, tokenizer),
     )
 
     trainer.train()
@@ -98,6 +96,5 @@ def save_lora_adapter(model, tokenizer, adapter_dir: str):
     tokenizer.save_pretrained(adapter_dir)
 
 def merge_and_save_hf(model, tokenizer, merged_dir: str, method: str = "merged_16bit"):
-    # Options: "merged_16bit", "merged_4bit", "lora"
     print(f"Merging model using method: {method}...")
     model.save_pretrained_merged(merged_dir, tokenizer, save_method=method)

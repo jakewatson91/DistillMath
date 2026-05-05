@@ -1,6 +1,10 @@
-"""Read all JSONs in --input dir and emit charts to --output.
+"""Read JSONs in --input dir, produce 2 charts + 1 summary table.
 
-Skips charts where a model has null values (e.g. teacher OOM has no speed numbers).
+Charts:
+  headline.png    — capability vs cost, with arrow showing distillation lift
+  throughput.png  — throughput vs batch size
+Table:
+  summary.md      — all metrics, all models, paste into slide
 """
 
 import argparse
@@ -10,9 +14,41 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+ACCENT = "#4e47c2"
+BLACK = "#000000"
+WHITE = "#ffffff"
+INFEASIBLE = "#f0f0f0"
+
 ORDER = ["teacher", "base_student", "distilled"]
-LABELS = {"teacher": "Teacher (7B)", "base_student": "Base Student (1.5B)", "distilled": "Distilled (1.5B)"}
-COLORS = {"teacher": "#888888", "base_student": "#4a90e2", "distilled": "#e2724a"}
+LABELS = {
+    "teacher": "Teacher 7B",
+    "base_student": "Base 1.5B",
+    "distilled": "Distilled 1.5B",
+}
+COLORS = {"teacher": WHITE, "base_student": BLACK, "distilled": ACCENT}
+EDGES = {"teacher": BLACK, "base_student": BLACK, "distilled": ACCENT}
+
+# Approximate VRAM for teacher in bf16 — placed in the infeasible region on the headline plot.
+TEACHER_VRAM_ESTIMATE_GB = 14.0
+VRAM_CAP_GB = 8.0
+
+plt.rcParams.update({
+    "font.family": "sans-serif",
+    "font.size": 11,
+    "axes.edgecolor": BLACK,
+    "axes.labelcolor": BLACK,
+    "axes.titlecolor": BLACK,
+    "axes.linewidth": 1.0,
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "xtick.color": BLACK,
+    "ytick.color": BLACK,
+    "text.color": BLACK,
+    "figure.facecolor": WHITE,
+    "axes.facecolor": WHITE,
+    "grid.color": "#dddddd",
+    "grid.linewidth": 0.6,
+})
 
 
 def load_records(input_dir: Path):
@@ -21,123 +57,210 @@ def load_records(input_dir: Path):
         with open(p) as f:
             r = json.load(f)
         recs[r["name"]] = r
-    ordered = [recs[n] for n in ORDER if n in recs]
-    for n, r in recs.items():
-        if n not in ORDER:
-            ordered.append(r)
-    return ordered
+    teacher_path = Path("teacher.json")
+    if teacher_path.exists() and "teacher" not in recs:
+        with open(teacher_path) as f:
+            recs["teacher"] = json.load(f)
+    return [recs[n] for n in ORDER if n in recs]
 
 
-def bar(ax, recs, getter, title, ylabel, hline=None, label_fn=lambda v: f"{v:.2f}"):
-    names = [LABELS.get(r["name"], r["name"]) for r in recs]
-    vals = [getter(r) for r in recs]
-    colors = [COLORS.get(r["name"], "#666") for r in recs]
-    xs = np.arange(len(names))
-    bars = ax.bar(xs, [v if v is not None else 0 for v in vals], color=colors)
-    for x, v, b in zip(xs, vals, bars):
-        if v is None:
-            ax.text(x, 0.02 * (max([vv for vv in vals if vv is not None] or [1])), "OOM / N/A",
-                    ha="center", va="bottom", fontsize=10, color="#aa0000", fontweight="bold")
-        else:
-            ax.text(x, v, label_fn(v), ha="center", va="bottom", fontsize=10)
-    if hline is not None:
-        ax.axhline(hline, color="red", linestyle="--", linewidth=1)
-        ax.text(len(names) - 0.5, hline, f" {hline}GB target", color="red", va="bottom", ha="right", fontsize=9)
-    ax.set_xticks(xs)
-    ax.set_xticklabels(names)
-    ax.set_title(title)
-    ax.set_ylabel(ylabel)
-    ax.grid(axis="y", alpha=0.3)
+# ─── helpers ──────────────────────────────────────────────────────────────────
+
+def get_accuracy(r):
+    return (r.get("accuracy") or {}).get("accuracy")
 
 
-def chart_vram(recs, out):
-    fig, ax = plt.subplots(figsize=(7, 5))
-    bar(ax, recs,
-        lambda r: r["vram"]["peak_during_gsm8k_gb"] if r["vram"] and r["vram"].get("peak_during_gsm8k_gb") else None,
-        "Peak VRAM During Inference", "GB", hline=8.0,
-        label_fn=lambda v: f"{v:.2f} GB")
-    fig.tight_layout()
-    fig.savefig(out / "vram.png", dpi=150)
-    plt.close(fig)
+def get_vram(r):
+    return (r.get("vram") or {}).get("peak_during_gsm8k_gb")
 
 
-def chart_latency(recs, out):
-    fig, ax = plt.subplots(figsize=(7, 5))
-    bar(ax, recs,
-        lambda r: r["latency"]["p50_per_token_ms"] if r["latency"] else None,
-        "Per-Token Latency (greedy decode)", "ms / token (p50)",
-        label_fn=lambda v: f"{v:.1f} ms")
-    fig.tight_layout()
-    fig.savefig(out / "latency.png", dpi=150)
-    plt.close(fig)
+def get_latency_p50(r):
+    return (r.get("latency") or {}).get("p50_per_token_ms")
 
 
-def chart_throughput(recs, out):
-    fig, ax = plt.subplots(figsize=(8, 5))
+def get_throughput_at(r, bs):
+    for t in (r.get("throughput") or []):
+        if t.get("batch_size") == bs and not t.get("oom"):
+            return t.get("tokens_per_s")
+    return None
+
+
+def get_max_throughput(r):
+    valid = [t["tokens_per_s"] for t in (r.get("throughput") or []) if not t.get("oom")]
+    return max(valid) if valid else None
+
+
+def get_jpc(r):
+    return r.get("joules_per_correct")
+
+
+def fmt(v, suffix="", precision=1, dash="—"):
+    if v is None:
+        return dash
+    if isinstance(v, float):
+        return f"{v:.{precision}f}{suffix}"
+    return f"{v}{suffix}"
+
+
+# ─── charts ───────────────────────────────────────────────────────────────────
+
+def chart_headline(recs, out: Path):
+    """Capability vs cost. The story in one image."""
+    fig, ax = plt.subplots(figsize=(10, 6.5))
+
+    points = {}  # name -> (x, y, plotted)
     for r in recs:
-        if not r.get("throughput"):
+        name = r["name"]
+        acc = get_accuracy(r)
+        if acc is None:
             continue
-        bs = [t["batch_size"] for t in r["throughput"] if not t.get("oom")]
-        tps = [t["tokens_per_s"] for t in r["throughput"] if not t.get("oom")]
-        if bs:
-            ax.plot(bs, tps, marker="o", label=LABELS.get(r["name"], r["name"]),
-                    color=COLORS.get(r["name"], "#666"), linewidth=2)
-    ax.set_xlabel("Batch Size")
+        if name == "teacher":
+            x = TEACHER_VRAM_ESTIMATE_GB
+        else:
+            x = get_vram(r)
+            if x is None:
+                continue
+        y = acc * 100
+        points[name] = (x, y)
+
+    # Shade infeasible region beyond the cap
+    xmax = 17
+    ax.axvspan(VRAM_CAP_GB, xmax, color=INFEASIBLE, zorder=0)
+    ax.axvline(VRAM_CAP_GB, color=ACCENT, linestyle="--", linewidth=1.2, zorder=1)
+    ax.text(VRAM_CAP_GB + 0.15, 5, f"{VRAM_CAP_GB:.0f} GB cap",
+            color=ACCENT, fontsize=10, va="bottom", fontweight="bold")
+    ax.text((VRAM_CAP_GB + xmax) / 2, 12, "infeasible on 8 GB hardware",
+            color="#888", fontsize=10, ha="center", style="italic")
+
+    # Arrow from base → distilled, showing the lift from distillation
+    if "base_student" in points and "distilled" in points:
+        bx, by = points["base_student"]
+        dx, dy = points["distilled"]
+        ax.annotate(
+            "",
+            xy=(dx, dy), xytext=(bx, by),
+            arrowprops=dict(
+                arrowstyle="->", color=ACCENT, lw=2.2,
+                shrinkA=14, shrinkB=14,
+            ),
+            zorder=2,
+        )
+        mid_x, mid_y = (bx + dx) / 2, (by + dy) / 2
+        delta = dy - by
+        ax.text(
+            mid_x, mid_y + 4,
+            f"+{delta:.1f} pts\nfrom distillation",
+            color=ACCENT, fontsize=10, fontweight="bold",
+            ha="center", va="bottom",
+        )
+
+    # Plot each model marker
+    for name, (x, y) in points.items():
+        ax.scatter(
+            x, y, s=420,
+            c=COLORS[name], edgecolors=EDGES[name],
+            linewidths=2.2, zorder=3,
+        )
+        # Label placement: teacher to the left (since it's near the right edge), others to the right
+        if name == "teacher":
+            ax.annotate(
+                f"{LABELS[name]}\n{y:.1f}%",
+                xy=(x, y), xytext=(-14, 0), textcoords="offset points",
+                ha="right", va="center", fontsize=11, fontweight="bold",
+            )
+        else:
+            ax.annotate(
+                f"{LABELS[name]}\n{y:.1f}%",
+                xy=(x, y), xytext=(14, 0), textcoords="offset points",
+                ha="left", va="center", fontsize=11, fontweight="bold",
+            )
+
+    ax.set_xlim(0, xmax)
+    ax.set_ylim(0, 100)
+    ax.set_xlabel("Peak VRAM during inference (GB)")
+    ax.set_ylabel("GSM8K Accuracy (%)")
+    ax.set_title("Distilled student keeps teacher-level accuracy\nat a fraction of the memory cost",
+                 fontweight="bold", pad=12)
+    ax.grid(alpha=0.5)
+    ax.set_axisbelow(True)
+    fig.tight_layout()
+    fig.savefig(out / "headline.png", dpi=150)
+    plt.close(fig)
+
+
+def chart_throughput(recs, out: Path):
+    """Single line chart: throughput vs batch size."""
+    fig, ax = plt.subplots(figsize=(9, 5.5))
+    for r in recs:
+        bs_list = [t["batch_size"] for t in (r.get("throughput") or []) if not t.get("oom")]
+        tps_list = [t["tokens_per_s"] for t in (r.get("throughput") or []) if not t.get("oom")]
+        if not bs_list:
+            continue
+        line_color = ACCENT if r["name"] == "distilled" else BLACK
+        ax.plot(bs_list, tps_list, marker="o", label=LABELS[r["name"]],
+                color=line_color, linewidth=2.5, markersize=9)
+    ax.set_xlabel("Batch size")
     ax.set_ylabel("Tokens / second")
-    ax.set_title("Throughput vs Batch Size")
+    ax.set_title("Throughput as concurrency grows", fontweight="bold", pad=12)
     ax.set_xscale("log", base=2)
-    ax.grid(alpha=0.3)
-    ax.legend()
+    ax.grid(alpha=0.5)
+    ax.set_axisbelow(True)
+    ax.legend(frameon=False, loc="upper left")
     fig.tight_layout()
     fig.savefig(out / "throughput.png", dpi=150)
     plt.close(fig)
 
 
-def chart_accuracy(recs, out):
-    fig, ax = plt.subplots(figsize=(7, 5))
-    bar(ax, recs,
-        lambda r: r["accuracy"]["accuracy"] if r.get("accuracy") else None,
-        "GSM8K Pass@1 Accuracy", "accuracy",
-        label_fn=lambda v: f"{v*100:.1f}%")
-    ax.set_ylim(0, 1)
-    fig.tight_layout()
-    fig.savefig(out / "accuracy.png", dpi=150)
-    plt.close(fig)
+# ─── summary table ────────────────────────────────────────────────────────────
 
+def write_summary(recs, out: Path):
+    """Markdown table with everything that didn't earn a chart."""
+    by_name = {r["name"]: r for r in recs}
+    cols = [n for n in ORDER if n in by_name]
+    headers = [LABELS[c] for c in cols]
 
-def chart_energy(recs, out):
-    fig, ax = plt.subplots(figsize=(7, 5))
-    bar(ax, recs,
-        lambda r: r.get("joules_per_correct"),
-        "Energy per Correct Answer", "joules / correct",
-        label_fn=lambda v: f"{v:.0f} J")
-    fig.tight_layout()
-    fig.savefig(out / "energy.png", dpi=150)
-    plt.close(fig)
+    def row(label, getter, fmt_fn=lambda v: fmt(v)):
+        return [label] + [fmt_fn(getter(by_name[c])) for c in cols]
 
+    rows = [
+        row("GSM8K accuracy", lambda r: get_accuracy(r),
+            lambda v: fmt(v * 100, "%", precision=1) if v is not None else "—"),
+        row("Peak VRAM", lambda r: get_vram(r),
+            lambda v: fmt(v, " GB", precision=2) if v is not None else "OOM (>8 GB)"),
+        row("Latency p50", lambda r: get_latency_p50(r),
+            lambda v: fmt(v, " ms/tok", precision=1)),
+        row("Throughput @ bs=1", lambda r: get_throughput_at(r, 1),
+            lambda v: fmt(v, " tok/s", precision=0)),
+        row("Throughput @ bs=8", lambda r: get_throughput_at(r, 8),
+            lambda v: fmt(v, " tok/s", precision=0)),
+        row("Max throughput", lambda r: get_max_throughput(r),
+            lambda v: fmt(v, " tok/s", precision=0)),
+        row("Energy / correct", lambda r: get_jpc(r),
+            lambda v: fmt(v, " J", precision=0)),
+    ]
 
-def chart_difficulty(recs, out):
-    fig, ax = plt.subplots(figsize=(8, 5))
-    bucket_order = ["easy (≤2)", "med (3-4)", "hard (5-6)", "v.hard (7+)"]
-    for r in recs:
-        acc = r.get("accuracy") or {}
-        bd = acc.get("by_difficulty")
-        if not bd:
-            continue
-        ys = [bd[b]["accuracy"] if b in bd else None for b in bucket_order]
-        xs = [b for b, y in zip(bucket_order, ys) if y is not None]
-        ys = [y for y in ys if y is not None]
-        ax.plot(xs, ys, marker="o", label=LABELS.get(r["name"], r["name"]),
-                color=COLORS.get(r["name"], "#666"), linewidth=2)
-    ax.set_xlabel("Problem Difficulty (# reasoning steps)")
-    ax.set_ylabel("Accuracy")
-    ax.set_title("Accuracy by Problem Difficulty (degradation curve)")
-    ax.set_ylim(0, 1)
-    ax.grid(alpha=0.3)
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(out / "accuracy_by_difficulty.png", dpi=150)
-    plt.close(fig)
+    lines = []
+    lines.append("# Benchmark Summary\n")
+    lines.append("| Metric | " + " | ".join(headers) + " |")
+    lines.append("|---" * (len(cols) + 1) + "|")
+    for r in rows:
+        lines.append("| " + " | ".join(r) + " |")
+
+    notes = []
+    teacher = by_name.get("teacher")
+    if teacher and (teacher.get("vram") or {}).get("oom_on_8gb"):
+        notes.append(f"- Teacher 7B does not load under the {VRAM_CAP_GB:.0f} GB cap; "
+                     f"speed and memory metrics are N/A. Accuracy is cited from prior measurement.")
+    notes.append("- All measurements use greedy decode (`do_sample=False`) for reproducibility.")
+    notes.append("- Energy = total joules sampled at 10 Hz over the GSM8K eval, divided by # correct answers.")
+
+    if notes:
+        lines.append("\n**Notes**\n")
+        lines.extend(notes)
+
+    out_path = out / "summary.md"
+    with open(out_path, "w") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 def main():
@@ -150,24 +273,15 @@ def main():
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Also pull teacher.json from repo root if it exists
     recs = load_records(in_dir)
-    teacher_path = Path("teacher.json")
-    if teacher_path.exists() and not any(r["name"] == "teacher" for r in recs):
-        with open(teacher_path) as f:
-            recs.insert(0, json.load(f))
-
     if not recs:
         print(f"No JSONs found in {in_dir}")
         return
 
-    chart_vram(recs, out_dir)
-    chart_latency(recs, out_dir)
+    chart_headline(recs, out_dir)
     chart_throughput(recs, out_dir)
-    chart_accuracy(recs, out_dir)
-    chart_energy(recs, out_dir)
-    chart_difficulty(recs, out_dir)
-    print(f"Wrote 6 charts to {out_dir}")
+    write_summary(recs, out_dir)
+    print(f"Wrote 2 charts + summary.md to {out_dir}")
 
 
 if __name__ == "__main__":

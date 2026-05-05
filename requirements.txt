@@ -2,6 +2,7 @@
 # Then: pip install -r requirements.txt
 
 transformers>=4.45
+accelerate>=0.34
 datasets>=2.20
 huggingface_hub>=0.24
 python-dotenv>=1.0

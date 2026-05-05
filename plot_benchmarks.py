@@ -147,14 +147,6 @@ def chart_headline(recs, out: Path):
             ),
             zorder=2,
         )
-        mid_x, mid_y = (bx + dx) / 2, (by + dy) / 2
-        delta = dy - by
-        ax.text(
-            mid_x, mid_y + 4,
-            f"+{delta:.1f} pts\nfrom distillation",
-            color=ACCENT, fontsize=10, fontweight="bold",
-            ha="center", va="bottom",
-        )
 
     # Plot each model marker
     for name, (x, y) in points.items():
@@ -181,8 +173,7 @@ def chart_headline(recs, out: Path):
     ax.set_ylim(0, 100)
     ax.set_xlabel("Peak VRAM during inference (GB)")
     ax.set_ylabel("GSM8K Accuracy (%)")
-    ax.set_title("Distilled student keeps teacher-level accuracy\nat a fraction of the memory cost",
-                 fontweight="bold", pad=12)
+    ax.set_title("Accuracy comparison", fontweight="bold", pad=12)
     ax.grid(alpha=0.5)
     ax.set_axisbelow(True)
     fig.tight_layout()
@@ -201,12 +192,22 @@ def chart_degradation(recs, out: Path):
         ys = [bd[b]["accuracy"] * 100 if b in bd else None for b in bucket_order]
         xs_present = [b for b, y in zip(bucket_order, ys) if y is not None]
         ys_present = [y for y in ys if y is not None]
-        line_color = ACCENT if r["name"] == "distilled" else LIGHT_ACCENT
-        ax.plot(xs_present, ys_present, marker="o", label=LABELS[r["name"]],
-                color=line_color, linewidth=2.5, markersize=9)
+        is_distilled = r["name"] == "distilled"
+        ax.plot(
+            xs_present, ys_present,
+            label=LABELS[r["name"]],
+            color=ACCENT if is_distilled else LIGHT_ACCENT,
+            linewidth=2.5,
+            linestyle="-" if is_distilled else "--",
+            marker="o" if is_distilled else "s",
+            markersize=9,
+            markerfacecolor=ACCENT if is_distilled else WHITE,
+            markeredgecolor=ACCENT if is_distilled else LIGHT_ACCENT,
+            markeredgewidth=2,
+        )
     ax.set_xlabel("Problem difficulty (arithmetic steps in gold answer)")
     ax.set_ylabel("Accuracy (%)")
-    ax.set_title("Where does capability hold up?", fontweight="bold", pad=12)
+    ax.set_title("Performance degradation", fontweight="bold", pad=12)
     ax.set_ylim(0, 100)
     ax.grid(alpha=0.5)
     ax.set_axisbelow(True)
@@ -224,12 +225,22 @@ def chart_throughput(recs, out: Path):
         tps_list = [t["tokens_per_s"] for t in (r.get("throughput") or []) if not t.get("oom")]
         if not bs_list:
             continue
-        line_color = ACCENT if r["name"] == "distilled" else LIGHT_ACCENT
-        ax.plot(bs_list, tps_list, marker="o", label=LABELS[r["name"]],
-                color=line_color, linewidth=2.5, markersize=9)
+        is_distilled = r["name"] == "distilled"
+        ax.plot(
+            bs_list, tps_list,
+            label=LABELS[r["name"]],
+            color=ACCENT if is_distilled else LIGHT_ACCENT,
+            linewidth=2.5,
+            linestyle="-" if is_distilled else "--",
+            marker="o" if is_distilled else "s",
+            markersize=9,
+            markerfacecolor=ACCENT if is_distilled else WHITE,
+            markeredgecolor=ACCENT if is_distilled else LIGHT_ACCENT,
+            markeredgewidth=2,
+        )
     ax.set_xlabel("Batch size")
     ax.set_ylabel("Tokens / second")
-    ax.set_title("Throughput as concurrency grows", fontweight="bold", pad=12)
+    ax.set_title("Throughput", fontweight="bold", pad=12)
     ax.set_xscale("log", base=2)
     ax.grid(alpha=0.5)
     ax.set_axisbelow(True)

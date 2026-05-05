@@ -1,8 +1,9 @@
-"""Read JSONs in --input dir, produce 2 charts + 1 summary table.
+"""Read JSONs in --input dir, produce 3 charts + 1 summary table.
 
 Charts:
   headline.png    — capability vs cost, with arrow showing distillation lift
   throughput.png  — throughput vs batch size
+  degradation.png — accuracy by problem difficulty (degradation analysis)
 Table:
   summary.md      — all metrics, all models, paste into slide
 """
@@ -15,6 +16,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 ACCENT = "#4e47c2"
+LIGHT_ACCENT = "#8b85d4"
 BLACK = "#000000"
 WHITE = "#ffffff"
 INFEASIBLE = "#f0f0f0"
@@ -25,8 +27,8 @@ LABELS = {
     "base_student": "Base 1.5B",
     "distilled": "Distilled 1.5B",
 }
-COLORS = {"teacher": WHITE, "base_student": BLACK, "distilled": ACCENT}
-EDGES = {"teacher": BLACK, "base_student": BLACK, "distilled": ACCENT}
+COLORS = {"teacher": WHITE, "base_student": LIGHT_ACCENT, "distilled": ACCENT}
+EDGES = {"teacher": BLACK, "base_student": LIGHT_ACCENT, "distilled": ACCENT}
 
 # Approximate VRAM for teacher in bf16 — placed in the infeasible region on the headline plot.
 TEACHER_VRAM_ESTIMATE_GB = 14.0
@@ -188,6 +190,32 @@ def chart_headline(recs, out: Path):
     plt.close(fig)
 
 
+def chart_degradation(recs, out: Path):
+    """Accuracy by problem difficulty — shows where capability falls off."""
+    fig, ax = plt.subplots(figsize=(9, 5.5))
+    bucket_order = ["easy (≤2)", "med (3-4)", "hard (5-6)", "v.hard (7+)"]
+    for r in recs:
+        bd = (r.get("accuracy") or {}).get("by_difficulty")
+        if not bd:
+            continue
+        ys = [bd[b]["accuracy"] * 100 if b in bd else None for b in bucket_order]
+        xs_present = [b for b, y in zip(bucket_order, ys) if y is not None]
+        ys_present = [y for y in ys if y is not None]
+        line_color = ACCENT if r["name"] == "distilled" else LIGHT_ACCENT
+        ax.plot(xs_present, ys_present, marker="o", label=LABELS[r["name"]],
+                color=line_color, linewidth=2.5, markersize=9)
+    ax.set_xlabel("Problem difficulty (arithmetic steps in gold answer)")
+    ax.set_ylabel("Accuracy (%)")
+    ax.set_title("Where does capability hold up?", fontweight="bold", pad=12)
+    ax.set_ylim(0, 100)
+    ax.grid(alpha=0.5)
+    ax.set_axisbelow(True)
+    ax.legend(frameon=False, loc="lower left")
+    fig.tight_layout()
+    fig.savefig(out / "degradation.png", dpi=150)
+    plt.close(fig)
+
+
 def chart_throughput(recs, out: Path):
     """Single line chart: throughput vs batch size."""
     fig, ax = plt.subplots(figsize=(9, 5.5))
@@ -196,7 +224,7 @@ def chart_throughput(recs, out: Path):
         tps_list = [t["tokens_per_s"] for t in (r.get("throughput") or []) if not t.get("oom")]
         if not bs_list:
             continue
-        line_color = ACCENT if r["name"] == "distilled" else BLACK
+        line_color = ACCENT if r["name"] == "distilled" else LIGHT_ACCENT
         ax.plot(bs_list, tps_list, marker="o", label=LABELS[r["name"]],
                 color=line_color, linewidth=2.5, markersize=9)
     ax.set_xlabel("Batch size")
@@ -280,8 +308,9 @@ def main():
 
     chart_headline(recs, out_dir)
     chart_throughput(recs, out_dir)
+    chart_degradation(recs, out_dir)
     write_summary(recs, out_dir)
-    print(f"Wrote 2 charts + summary.md to {out_dir}")
+    print(f"Wrote 3 charts + summary.md to {out_dir}")
 
 
 if __name__ == "__main__":

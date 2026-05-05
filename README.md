@@ -77,6 +77,7 @@ Reads `bench_results/*.json` plus `teacher.json` and writes to `bench_results/ch
 |---|---|
 | `headline.png` | Capability vs cost — VRAM × accuracy scatter with infeasible region shaded past 8 GB and an arrow showing the accuracy lift from distillation |
 | `throughput.png` | Tokens/s vs batch size, log x-axis |
+| `degradation.png` | Accuracy by problem difficulty — base 1.5B vs distilled 1.5B across reasoning-step buckets |
 | `summary.md` | Full metric table (latency, throughput, VRAM, energy, accuracy) across all three models |
 
 ### Methodology
@@ -85,6 +86,7 @@ Reads `bench_results/*.json` plus `teacher.json` and writes to `bench_results/ch
 - **Latency**: 30 runs of fixed-length generation after 5 warmup runs, p50/p95 reported per generated token.
 - **Throughput**: sweep over batch sizes; auto-stops and records the OOM batch size.
 - **Energy**: GPU power sampled at 10Hz via `pynvml.nvmlDeviceGetPowerUsage` over the GSM8K eval run, integrated trapezoidally to joules, then divided by # correct → joules per useful answer.
+- **Difficulty buckets** for the degradation chart are based on the count of `<<...>>` calculator tags in each GSM8K gold answer (≤2 easy, 3–4 med, 5–6 hard, 7+ very hard). Step count is a coarse proxy for problem complexity, not a canonical difficulty label.
 - **Teacher accuracy** is cited (85.4%); the 7B teacher does not load under an 8GB cap.
 
 ## Repo map

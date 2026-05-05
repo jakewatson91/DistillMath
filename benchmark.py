@@ -105,15 +105,31 @@ class PowerSampler:
         }
 
 
+def gsm8k_difficulty(answer: str) -> int:
+    """Number of arithmetic steps in the gold answer (count of <<...>> calculator tags)."""
+    return len(re.findall(r"<<.*?>>", answer))
+
+
+def difficulty_bucket(steps: int) -> str:
+    if steps <= 2:
+        return "easy (≤2)"
+    if steps <= 4:
+        return "med (3-4)"
+    if steps <= 6:
+        return "hard (5-6)"
+    return "v.hard (7+)"
+
+
 def load_gsm8k(prompt_head: str, prompt_tail: str):
     ds = load_dataset("openai/gsm8k", "main")["test"]
-    questions, answers = [], []
+    questions, answers, steps = [], [], []
     for ex in ds:
         questions.append(prompt_head + ex["question"] + prompt_tail)
         m = re.search(r"####\s*([^\s]+)", ex["answer"])
         assert m
         answers.append(m.group(1).strip().replace(",", ""))
-    return questions, answers
+        steps.append(gsm8k_difficulty(ex["answer"]))
+    return questions, answers, steps
 
 
 @torch.inference_mode()
@@ -196,24 +212,26 @@ def measure_throughput(model, tokenizer, prompts, device, batch_sizes, max_new_t
 
 
 @torch.inference_mode()
-def measure_accuracy(model, tokenizer, questions, answers, device, batch_size, max_new_tokens, sampler=None):
+def measure_accuracy(model, tokenizer, questions, answers, steps, device, batch_size, max_new_tokens, sampler=None):
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     correct = 0
     seen = 0
+    by_bucket = {}  # bucket -> [n_correct, n_total]
 
     if sampler:
         sampler.start()
 
     n_total = len(questions)
-    log_every = max(1, (n_total // batch_size) // 20)  # ~20 log lines over the run
+    log_every = max(1, (n_total // batch_size) // 20)
     t_start = time.perf_counter()
 
     for step, i in enumerate(tqdm(range(0, n_total, batch_size), desc="gsm8k", file=sys.stdout)):
         qs = questions[i : i + batch_size]
         ans = answers[i : i + batch_size]
+        st = steps[i : i + batch_size]
         inputs = tokenizer(qs, return_tensors="pt", padding=True, truncation=True).to(device)
         out = model.generate(
             **inputs,
@@ -222,13 +240,17 @@ def measure_accuracy(model, tokenizer, questions, answers, device, batch_size, m
             pad_token_id=tokenizer.pad_token_id,
         )
         decoded = tokenizer.batch_decode(out, skip_special_tokens=True)
-        for output, gold in zip(decoded, ans):
+        for output, gold, s in zip(decoded, ans, st):
+            bucket = difficulty_bucket(s)
+            by_bucket.setdefault(bucket, [0, 0])
+            by_bucket[bucket][1] += 1
             seen += 1
             matches = re.findall(r"\\boxed\{([^}]*)\}", output)
             if matches:
                 pred = matches[-1].strip().replace(",", "")
                 if pred == gold:
                     correct += 1
+                    by_bucket[bucket][0] += 1
 
         if (step + 1) % log_every == 0 or seen == n_total:
             elapsed = time.perf_counter() - t_start
@@ -242,11 +264,13 @@ def measure_accuracy(model, tokenizer, questions, answers, device, batch_size, m
 
     energy = sampler.stop() if sampler else None
     acc = correct / len(questions)
+    bucket_acc = {b: {"correct": c, "total": t, "accuracy": c / t} for b, (c, t) in by_bucket.items()}
 
     return {
         "n_total": len(questions),
         "n_correct": correct,
         "accuracy": acc,
+        "by_difficulty": bucket_acc,
         "energy": energy,
         "max_new_tokens": max_new_tokens,
         "batch_size": batch_size,
@@ -297,10 +321,11 @@ def main():
         log.info(f"  VRAM after load: {load_vram_gb:.2f} GB")
 
     with phase("load GSM8K test set"):
-        questions, answers = load_gsm8k(PROMPT_HEAD, PROMPT_TAIL)
+        questions, answers, steps = load_gsm8k(PROMPT_HEAD, PROMPT_TAIL)
         if args.gsm8k_limit > 0:
             questions = questions[: args.gsm8k_limit]
             answers = answers[: args.gsm8k_limit]
+            steps = steps[: args.gsm8k_limit]
         log.info(f"  {len(questions)} questions")
 
     with phase("latency"):
@@ -328,7 +353,7 @@ def main():
         sampler = None if args.skip_energy else PowerSampler(gpu_index=int(args.device.split(":")[-1]))
         torch.cuda.reset_peak_memory_stats(args.device)
         accuracy = measure_accuracy(
-            model, tokenizer, questions, answers, args.device,
+            model, tokenizer, questions, answers, steps, args.device,
             batch_size=args.gsm8k_batch_size, max_new_tokens=args.gsm8k_max_tokens, sampler=sampler,
         )
         gsm8k_peak_vram_gb = torch.cuda.max_memory_allocated(args.device) / 1e9

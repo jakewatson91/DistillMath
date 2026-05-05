@@ -1,0 +1,20 @@
+{
+  "name": "teacher",
+  "model_id": "Qwen/Qwen2.5-Math-7B-Instruct",
+  "note": "OOM on 8GB target hardware in bf16 (~14GB needed). Speed/memory metrics N/A. Accuracy cited from prior research.",
+  "vram": {
+    "after_load_gb": null,
+    "peak_during_latency_gb": null,
+    "peak_during_throughput_gb": null,
+    "peak_during_gsm8k_gb": null,
+    "oom_on_8gb": true
+  },
+  "latency": null,
+  "throughput": null,
+  "accuracy": {
+    "accuracy": 0.854,
+    "source": "prior research (cited)",
+    "by_difficulty": null
+  },
+  "joules_per_correct": null
+}

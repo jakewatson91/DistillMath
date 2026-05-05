@@ -1,0 +1,20 @@
+distill:
+  teacher_group: [[0,1]]
+  student_group: [[2]]
+  batch_size_per_gpu: 2
+  batch_size: 512 # not represent token
+  learning_rate: 5.0e-5
+  weight_decay: 0.1
+  kl_loss_weight: 0.5
+  temperature: 2.0
+  topk: 32
+  test_batch_size: 256
+
+  # lr_scheduler
+  # warmup_iters: 375
+  # lr_decay_iters: 26000
+  # min_learning_rate: 2.0e-5
+
+path:
+  save: /home/zzhang18/proj/CS554_NLP_Team7/saved_models/
+  load: /home/zzhang18/proj/CS554_NLP_Team7/saved_models/latest.pt

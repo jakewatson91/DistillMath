@@ -1,0 +1,13 @@
+# Install torch SEPARATELY first — see README/docs for the right CUDA wheel.
+# Then: pip install -r requirements.txt
+
+transformers>=4.45
+datasets>=2.20
+huggingface_hub>=0.24
+python-dotenv>=1.0
+pynvml>=11.5
+matplotlib>=3.8
+numpy>=1.26
+tqdm>=4.66
+pyyaml>=6.0
+bitsandbytes>=0.43

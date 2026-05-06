@@ -22,7 +22,7 @@ from tqdm import tqdm
 import numpy as np
 import torch.distributed as dist
 
-HF_DATASET_REPO = "jakewatson/mathdistill-traces"
+HF_DATASET_REPO = "jakewatson91/mathdistill-traces"
 HF_DATASET_FILES = [
     "collect_openai_gsm8k_math.json",
     "collect_meta-math_MetaMathQA_math.json",

@@ -7,10 +7,61 @@ The repo has two pipelines and a benchmarking layer:
 - **distill** — student trains on those traces with top-k KL + cross-entropy loss
 - **benchmark** — distilled student vs base student vs teacher on latency, throughput, peak VRAM, energy per correct answer, and GSM8K accuracy bucketed by problem difficulty
 
+## Results
+
+Measured on a single NVIDIA A30 with VRAM capped at 8 GB to simulate consumer-grade hardware. GSM8K test set (1319 questions), greedy decode.
+
+| Metric | Teacher 7B | Base 1.5B | **Distilled 1.5B** |
+|---|---|---|---|
+| GSM8K pass@1 (greedy) | 85.4% (cited) | 28.3% | **80.5%** |
+| Peak VRAM | OOM (>8 GB) | 3.31 GB | **3.29 GB** |
+| Latency p50 | — | 16.9 ms/tok | **17.1 ms/tok** |
+| Throughput @ batch=8 | — | 400 tok/s | **395 tok/s** |
+| Energy / correct answer | — | 452 J | **158 J** |
+
+Headline takeaways:
+- Teacher cannot run on the 8 GB target — distilled student is the only feasible option at this hardware cap.
+- Distillation lifts GSM8K accuracy from 28.3% → 80.5% while preserving the 1.5B model's compute profile (same VRAM, latency, throughput).
+- Energy per correct answer drops 65% (452 J → 158 J) — same compute spent, ~3× more useful output.
+
+## Architecture
+
+```
+              GSM8K + MetaMathQA
+                      │
+                      ▼
+         ┌────────────────────────────┐
+         │  Teacher: Qwen2.5-Math-7B  │   generates top-k logits +
+         │           -Instruct        │   sampled chain-of-thought
+         │           (frozen, eval)   │   completions per question
+         └─────────────┬──────────────┘
+                       │
+                       ▼
+         ┌────────────────────────────┐
+         │  Teacher traces (JSON)     │  ──►  jakewatson91/mathdistill-traces
+         └─────────────┬──────────────┘
+                       │
+   Student init ──►    ▼
+   Qwen2.5-Math-1.5B
+   (base)    ┌────────────────────────────┐
+             │  Distillation              │   • top-k KL + cross-entropy
+             │                            │   • temperature 2.0, top-k 32
+             │                            │   • bf16, multi-GPU TP
+             └─────────────┬──────────────┘
+                           │
+                           ▼
+             ┌────────────────────────────┐
+             │  Distilled student (1.5B)  │  ──►  jakewatson91/mathdistill-model
+             │  Fits in <8 GB VRAM        │
+             └────────────────────────────┘
+```
+
+The teacher group runs tensor-parallel across multiple GPUs and emits top-k logit distributions per token; the student group consumes those distributions to compute KL loss against its own predictions, plus cross-entropy against the sampled token. Configuration in `distill_config.yaml`.
+
 ## Hosted artifacts
 
-- **Distilled model + tokenizer**: [`jakewatson/mathdistill-model`](https://huggingface.co/jakewatson/mathdistill-model)
-- **Teacher traces (training data)**: [`jakewatson/mathdistill-traces`](https://huggingface.co/datasets/jakewatson/mathdistill-traces)
+- **Distilled model + tokenizer**: [`jakewatson91/mathdistill-model`](https://huggingface.co/jakewatson91/mathdistill-model)
+- **Teacher traces (training data)**: [`jakewatson91/mathdistill-traces`](https://huggingface.co/datasets/jakewatson91/mathdistill-traces)
 
 The training and eval scripts pull from these directly. Auth is read from a `.env` at the repo root:
 
@@ -35,7 +86,7 @@ python distill.py
 python distill.py --resume
 ```
 
-Loads the teacher sharded across the GPUs in `teacher_group`, the student on the GPUs in `student_group`, pulls training JSONs from `jakewatson/mathdistill-traces`, and distills via top-k KL + CE. Multi-GPU is required: teacher needs ~14GB and runs in parallel with the student. Edit `distill_config.yaml` for GPU groups, batch size, learning rate, KL weight, and temperature.
+Loads the teacher sharded across the GPUs in `teacher_group`, the student on the GPUs in `student_group`, pulls training JSONs from `jakewatson91/mathdistill-traces`, and distills via top-k KL + CE. Multi-GPU is required: teacher needs ~14GB and runs in parallel with the student. Edit `distill_config.yaml` for GPU groups, batch size, learning rate, KL weight, and temperature.
 
 ## Benchmarking
 
@@ -43,7 +94,7 @@ Loads the teacher sharded across the GPUs in `teacher_group`, the student on the
 
 ```bash
 python benchmark.py --model Qwen/Qwen2.5-Math-1.5B           --name base_student
-python benchmark.py --model jakewatson/mathdistill-model     --name distilled
+python benchmark.py --model jakewatson91/mathdistill-model     --name distilled
 python benchmark.py --model Qwen/Qwen2.5-Math-7B-Instruct    --name teacher
 ```
 

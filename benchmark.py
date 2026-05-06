@@ -4,7 +4,7 @@ Run once per model. Produces one JSON in --output. Then plot_benchmarks.py
 reads all JSONs in that dir and emits charts.
 
 Example:
-    python benchmark.py --model jakewatson/mathdistill-model --name distilled
+    python benchmark.py --model jakewatson91/mathdistill-model --name distilled
     python benchmark.py --model Qwen/Qwen2.5-Math-1.5B --name base_student
 """
 

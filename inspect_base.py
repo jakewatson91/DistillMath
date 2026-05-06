@@ -2,12 +2,13 @@
 
 Usage:
     python inspect_base.py
-    python inspect_base.py --model jakewatson/mathdistill-model  # for comparison
+    python inspect_base.py --model jakewatson91/mathdistill-model  # for comparison
     python inspect_base.py --n 10
 """
 
 import argparse
 import os
+import random
 import re
 
 import torch
@@ -29,6 +30,8 @@ def main():
     p.add_argument("--n", type=int, default=5)
     p.add_argument("--max-new-tokens", type=int, default=512)
     p.add_argument("--device", default="cuda:0")
+    p.add_argument("--random", action="store_true", help="sample from random indices instead of the first N")
+    p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 
     load_dotenv()
@@ -47,11 +50,18 @@ def main():
 
     ds = load_dataset("openai/gsm8k", "main")["test"]
 
+    if args.random:
+        random.seed(args.seed)
+        indices = random.sample(range(len(ds)), args.n)
+    else:
+        indices = list(range(args.n))
+
     n_with_box = 0
     n_correct = 0
+    wrong_examples = []
 
-    for i in range(args.n):
-        ex = ds[i]
+    for i, idx in enumerate(indices):
+        ex = ds[idx]
         question = ex["question"]
         gold = re.search(r"####\s*([^\s]+)", ex["answer"]).group(1).strip().replace(",", "")
 
@@ -76,9 +86,11 @@ def main():
             n_with_box += 1
         if is_correct:
             n_correct += 1
+        else:
+            wrong_examples.append((idx, gold, pred, decoded[-200:]))
 
         print("\n" + "=" * 80)
-        print(f"Q{i+1}: {question}")
+        print(f"Q{i+1} (idx={idx}): {question}")
         print(f"GOLD: {gold}")
         print("-" * 80)
         print("MODEL OUTPUT:")
@@ -89,9 +101,15 @@ def main():
         print(f"  correct: {is_correct}")
 
     print("\n" + "=" * 80)
-    print(f"SUMMARY ({args.n} samples):")
-    print(f"  with \\boxed{{}}: {n_with_box}/{args.n}")
-    print(f"  correct:        {n_correct}/{args.n}")
+    print(f"SUMMARY ({args.n} samples, indices={'random' if args.random else 'first'}):")
+    print(f"  with \\boxed{{}}: {n_with_box}/{args.n} ({100*n_with_box/args.n:.0f}%)")
+    print(f"  correct:        {n_correct}/{args.n} ({100*n_correct/args.n:.0f}%)")
+
+    if wrong_examples:
+        print("\nWRONG ANSWERS — gold vs pred (last 200 chars of output):")
+        for idx, gold, pred, tail in wrong_examples:
+            print(f"  idx={idx}: gold={gold!r}, pred={pred!r}")
+            print(f"    ...{tail}")
 
 
 if __name__ == "__main__":

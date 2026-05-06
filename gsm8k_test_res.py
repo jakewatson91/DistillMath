@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 import re
 import json
 
-HF_MODEL_REPO = "jakewatson/mathdistill-model"
+HF_MODEL_REPO = "jakewatson91/mathdistill-model"
 
 
 def _hf_login():

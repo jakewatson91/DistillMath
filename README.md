@@ -9,20 +9,33 @@ The repo has two pipelines and a benchmarking layer:
 
 ## Results
 
-Measured on a single NVIDIA A30 with VRAM capped at 8 GB to simulate consumer-grade hardware. GSM8K test set (1319 questions), greedy decode.
+Measured on a single NVIDIA A30 with VRAM capped at 8 GB to simulate consumer-grade hardware. GSM8K test set (1319 questions), greedy decode, bf16.
 
-| Metric | Teacher 7B | Base 1.5B | **Distilled 1.5B** |
+| Metric | Teacher 7B | Qwen 1.5B Instruct | **Distilled 1.5B** |
 |---|---|---|---|
-| GSM8K pass@1 (greedy) | 85.4% (cited) | 28.3% | **80.5%** |
+| GSM8K pass@1 (greedy) | 85.4% (cited) | 66.3% (874/1319) | **80.5% (1062/1319)** |
 | Peak VRAM | OOM (>8 GB) | 3.31 GB | **3.29 GB** |
-| Latency p50 | — | 16.9 ms/tok | **17.1 ms/tok** |
-| Throughput @ batch=8 | — | 400 tok/s | **395 tok/s** |
-| Energy / correct answer | — | 452 J | **158 J** |
+| Latency p50 | — | 17.17 ms/tok | **17.09 ms/tok** |
+| Latency p95 | — | 17.21 ms/tok | **17.13 ms/tok** |
+| Throughput @ batch=1 | — | 57.8 tok/s | **58.5 tok/s** |
+| Throughput @ batch=8 | — | 393.6 tok/s | **395.4 tok/s** |
+| Throughput @ batch=16 | — | 789.7 tok/s | **794.0 tok/s** |
+| Avg power draw | — | 114.3 W | **113.4 W** |
+| Energy / correct answer | — | 196.6 J | **158.1 J** |
 
 Headline takeaways:
-- Teacher cannot run on the 8 GB target — distilled student is the only feasible option at this hardware cap.
-- Distillation lifts GSM8K accuracy from 28.3% → 80.5% while preserving the 1.5B model's compute profile (same VRAM, latency, throughput).
-- Energy per correct answer drops 65% (452 J → 158 J) — same compute spent, ~3× more useful output.
+- **Teacher cannot run on the 8 GB target.** The distilled student is the only feasible option under this hardware cap.
+- **Distillation lifts GSM8K accuracy by +14.3 pp** over an off-the-shelf Qwen 1.5B Instruct (66.3% → 80.5%) while preserving an essentially identical compute profile (same architecture, weights only differ).
+- **Energy per correct answer drops 20%** (196.6 J → 158.1 J). Both models burn similar total energy on the eval; distilled produces more useful output per joule.
+
+Accuracy by problem difficulty (gap widens as problems get harder — distillation transfers most on the easy/med buckets):
+
+| Difficulty (reasoning steps) | Qwen 1.5B Instruct | Distilled 1.5B | Δ |
+|---|---|---|---|
+| Easy (≤2) | 73.4% (323/440) | 87.7% (386/440) | +14.3 |
+| Medium (3–4) | 67.6% (442/654) | 80.3% (525/654) | +12.7 |
+| Hard (5–6) | 49.2% (96/195) | 68.7% (134/195) | +19.5 |
+| Very hard (7+) | 43.3% (13/30) | 56.7% (17/30) | +13.4 |
 
 ## Architecture
 
@@ -128,7 +141,7 @@ Reads `bench_results/*.json` plus `teacher.json` and writes to `bench_results/ch
 |---|---|
 | `headline.png` | Capability vs cost — VRAM × accuracy scatter with infeasible region shaded past 8 GB and an arrow showing the accuracy lift from distillation |
 | `throughput.png` | Tokens/s vs batch size, log x-axis |
-| `degradation.png` | Accuracy by problem difficulty — base 1.5B vs distilled 1.5B across reasoning-step buckets |
+| `degradation.png` | Accuracy by problem difficulty — Qwen 1.5B Instruct vs distilled 1.5B across reasoning-step buckets |
 | `summary.md` | Full metric table (latency, throughput, VRAM, energy, accuracy) across all three models |
 
 ### Methodology
@@ -142,18 +155,38 @@ Reads `bench_results/*.json` plus `teacher.json` and writes to `bench_results/ch
 
 ## Repo map
 
+All scripts assume they're run from the repo root (so `.env` and relative paths resolve correctly).
+
 ```
-distill.py                  training entrypoint (multi-GPU spawn)
-distill_config.yaml         training config (GPU groups, batch size, LR, KL weight, temperature)
-collect.py / collect_math.py   collect-side scripts (teacher trace generation)
-dist_distill/               distillation core (trainer, distiller, distributed setup, TP plan)
-dataset/data_loader.py      DistillDataset over the collected JSON traces
-gsm8k_test.py               GSM8K eval — teacher
-gsm8k_test_res.py           GSM8K eval — distilled student (pulls from HF)
-code_test.py                LiveCodeBench eval (separate code-generation pipeline)
-benchmark.py                single-model benchmark: latency, throughput, VRAM, energy, accuracy
-plot_benchmarks.py          benchmark JSONs → 6 PNGs
-teacher.json                teacher record (OOM markers + cited accuracy)
-requirements.txt            non-torch deps
-.env                        HF_API_KEY=...  (gitignored)
+distill.py                       training entrypoint (multi-GPU spawn)
+distill_config.yaml              training config (GPU groups, batch size, LR, KL weight, temperature)
+benchmark.py                     single-model benchmark: latency, throughput, VRAM, energy, accuracy
+plot_benchmarks.py               benchmark JSONs → 3 charts + summary.md
+teacher.json                     teacher record (OOM markers + cited accuracy)
+requirements.txt                 non-torch deps
+.env                             HF_API_KEY=...  (gitignored)
+
+dist_distill/                    distillation core (trainer, distiller, distributed setup, TP plan)
+dataset/data_loader.py           DistillDataset over the collected JSON traces
+collect.py / collect_math.py     collect-side scripts (teacher trace generation)
+pipp/                            pipeline-parallel utilities used by training
+
+evals/                           legacy single-model eval scripts (kept for reference)
+  gsm8k_test.py                  GSM8K eval — teacher (older, pre-benchmark.py)
+  gsm8k_test_res.py              GSM8K eval — distilled student (pulls from HF)
+  code_test.py                   LiveCodeBench eval (separate code-generation pipeline)
+  test.py                        scratch model-loading test
+
+tools/                           diagnostic + comparison utilities
+  inspect_base.py                sample N outputs from a model, count format compliance
+  side_by_side.py                distilled vs Qwen Instruct on N GSM8K questions → markdown
+
+bench_results/                   benchmark JSONs + generated charts (tracked — these are the deliverable)
+  base_student.json
+  distilled.json
+  charts/
+    headline.png
+    throughput.png
+    degradation.png
+    summary.md
 ```

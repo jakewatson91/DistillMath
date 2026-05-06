@@ -24,7 +24,7 @@ INFEASIBLE = "#f0f0f0"
 ORDER = ["teacher", "base_student", "distilled"]
 LABELS = {
     "teacher": "Teacher 7B",
-    "base_student": "Base 1.5B",
+    "base_student": "Qwen 1.5B Instruct",
     "distilled": "Distilled 1.5B",
 }
 COLORS = {"teacher": WHITE, "base_student": LIGHT_ACCENT, "distilled": ACCENT}

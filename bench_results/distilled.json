@@ -1,0 +1,91 @@
+{
+  "name": "distilled",
+  "model_id": "jakewatson91/mathdistill-model",
+  "device": "cuda:0",
+  "gpu_name": "NVIDIA A30",
+  "gpu_total_vram_gb": 25.339101184,
+  "vram": {
+    "after_load_gb": 3.087429632,
+    "peak_during_latency_gb": 3.107616256,
+    "peak_during_throughput_gb": 3.310685184,
+    "peak_during_gsm8k_gb": 3.29472512
+  },
+  "latency": {
+    "n_runs": 30,
+    "max_new_tokens": 256,
+    "avg_gen_tokens": 256,
+    "p50_total_s": 4.374468883994268,
+    "p95_total_s": 4.3851252580061555,
+    "mean_total_s": 4.375012359265626,
+    "p50_per_token_ms": 17.08776907810261,
+    "p95_per_token_ms": 17.129395539086545
+  },
+  "throughput": [
+    {
+      "batch_size": 1,
+      "elapsed_s": 2.1879128370201215,
+      "gen_tokens": 128,
+      "tokens_per_s": 58.50324466048317
+    },
+    {
+      "batch_size": 2,
+      "elapsed_s": 2.56333838700084,
+      "gen_tokens": 256,
+      "tokens_per_s": 99.869764092881
+    },
+    {
+      "batch_size": 4,
+      "elapsed_s": 2.5548134619602934,
+      "gen_tokens": 512,
+      "tokens_per_s": 200.40602087917034
+    },
+    {
+      "batch_size": 8,
+      "elapsed_s": 2.5896897849743254,
+      "gen_tokens": 1024,
+      "tokens_per_s": 395.41415575771447
+    },
+    {
+      "batch_size": 16,
+      "elapsed_s": 2.579455496976152,
+      "gen_tokens": 2048,
+      "tokens_per_s": 793.9660143006276
+    }
+  ],
+  "accuracy": {
+    "n_total": 1319,
+    "n_correct": 1062,
+    "accuracy": 0.8051554207733131,
+    "by_difficulty": {
+      "easy (\u22642)": {
+        "correct": 386,
+        "total": 440,
+        "accuracy": 0.8772727272727273
+      },
+      "med (3-4)": {
+        "correct": 525,
+        "total": 654,
+        "accuracy": 0.8027522935779816
+      },
+      "hard (5-6)": {
+        "correct": 134,
+        "total": 195,
+        "accuracy": 0.6871794871794872
+      },
+      "v.hard (7+)": {
+        "correct": 17,
+        "total": 30,
+        "accuracy": 0.5666666666666667
+      }
+    },
+    "energy": {
+      "energy_joules": 167928.32653697327,
+      "avg_power_w": 113.4328372207891,
+      "duration_s": 1480.420755147934,
+      "n_samples": 14792
+    },
+    "max_new_tokens": 512,
+    "batch_size": 8
+  },
+  "joules_per_correct": 158.12460125892022
+}
